@@ -259,6 +259,20 @@
             display: none;
         }
 
+        .market-selector {
+            margin: 20px 0;
+            text-align: center;
+        }
+
+        .market-select {
+            padding: 10px 15px;
+            border-radius: 25px;
+            border: 1px solid rgba(255, 255, 255, 0.3);
+            background: rgba(255, 255, 255, 0.9);
+            font-size: 1rem;
+            outline: none;
+        }
+
         @media (max-width: 768px) {
             .logo {
                 font-size: 2rem;
@@ -282,7 +296,7 @@
 <body>
     <div class="container">
         <div class="header">
-            <div class="logo">🎵 Vibeees</div>
+            <div class="logo">🎵 Vibes</div>
             <div class="tagline">Discover Your Next Favorite Song</div>
             
             <div id="userInfo" class="user-info hidden">
@@ -299,6 +313,25 @@
             <div class="search-section">
                 <div class="search-container">
                     <input type="text" id="searchInput" class="search-input" placeholder="Search for songs, artists, albums...">
+                </div>
+                
+                <div class="market-selector">
+                    <select id="marketSelect" class="market-select">
+                        <option value="">Auto-detect market</option>
+                        <option value="US">United States</option>
+                        <option value="GB">United Kingdom</option>
+                        <option value="CA">Canada</option>
+                        <option value="AU">Australia</option>
+                        <option value="DE">Germany</option>
+                        <option value="FR">France</option>
+                        <option value="ES">Spain</option>
+                        <option value="IT">Italy</option>
+                        <option value="BR">Brazil</option>
+                        <option value="MX">Mexico</option>
+                        <option value="JP">Japan</option>
+                        <option value="KR">South Korea</option>
+                        <option value="IN">India</option>
+                    </select>
                 </div>
                 
                 <div class="search-filters">
@@ -320,13 +353,14 @@
     <script>
         class SpotifyApp {
             constructor() {
-                // Replace with your Spotify Client ID
+                // Replace with your actual Spotify Client ID
                 this.clientId = '4bca9e520a71418391a93108c52fdfb7';
-                this.redirectUri = window.location.origin;
+                this.redirectUri = window.location.origin + window.location.pathname;
                 this.scopes = 'user-read-private user-read-email user-read-playback-state user-modify-playback-state streaming';
                 
                 this.accessToken = null;
                 this.currentSearchType = 'track';
+                this.tokenExpiresAt = null;
                 
                 this.init();
             }
@@ -359,9 +393,14 @@
                 const hash = window.location.hash.substring(1);
                 const params = new URLSearchParams(hash);
                 const token = params.get('access_token');
+                const expiresIn = params.get('expires_in');
 
                 if (token) {
                     this.accessToken = token;
+                    // Set expiration time
+                    if (expiresIn) {
+                        this.tokenExpiresAt = Date.now() + (parseInt(expiresIn) * 1000);
+                    }
                     this.showApp();
                     this.getUserInfo();
                     // Clean URL
@@ -369,18 +408,34 @@
                 }
             }
 
+            isTokenValid() {
+                return this.accessToken && (!this.tokenExpiresAt || Date.now() < this.tokenExpiresAt);
+            }
+
             login() {
+                const state = this.generateRandomString(16);
                 const authUrl = `https://accounts.spotify.com/authorize?` +
                     `client_id=${this.clientId}&` +
                     `response_type=token&` +
                     `redirect_uri=${encodeURIComponent(this.redirectUri)}&` +
-                    `scope=${encodeURIComponent(this.scopes)}`;
+                    `scope=${encodeURIComponent(this.scopes)}&` +
+                    `state=${state}`;
                 
                 window.location.href = authUrl;
             }
 
+            generateRandomString(length) {
+                const possible = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+                let text = '';
+                for (let i = 0; i < length; i++) {
+                    text += possible.charAt(Math.floor(Math.random() * possible.length));
+                }
+                return text;
+            }
+
             logout() {
                 this.accessToken = null;
+                this.tokenExpiresAt = null;
                 this.hideApp();
                 document.getElementById('results').innerHTML = '';
             }
@@ -396,20 +451,44 @@
                 document.getElementById('userInfo').classList.add('hidden');
             }
 
+            async makeSpotifyRequest(url, options = {}) {
+                if (!this.isTokenValid()) {
+                    throw new Error('Token expired or invalid');
+                }
+
+                const response = await fetch(url, {
+                    ...options,
+                    headers: {
+                        'Authorization': `Bearer ${this.accessToken}`,
+                        'Content-Type': 'application/json',
+                        ...options.headers
+                    }
+                });
+
+                if (response.status === 401) {
+                    // Token expired
+                    this.logout();
+                    throw new Error('Authentication expired. Please login again.');
+                }
+
+                if (!response.ok) {
+                    const errorData = await response.json().catch(() => ({}));
+                    throw new Error(errorData.error?.message || `HTTP error! status: ${response.status}`);
+                }
+
+                return response;
+            }
+
             async getUserInfo() {
                 try {
-                    const response = await fetch('https://api.spotify.com/v1/me', {
-                        headers: {
-                            'Authorization': `Bearer ${this.accessToken}`
-                        }
-                    });
-
-                    if (response.ok) {
-                        const user = await response.json();
-                        this.displayUserInfo(user);
-                    }
+                    const response = await this.makeSpotifyRequest('https://api.spotify.com/v1/me');
+                    const user = await response.json();
+                    this.displayUserInfo(user);
                 } catch (error) {
                     console.error('Error fetching user info:', error);
+                    if (error.message.includes('Authentication expired')) {
+                        this.showError(error.message);
+                    }
                 }
             }
 
@@ -421,6 +500,7 @@
                 userDetails.innerHTML = `
                     ${avatar ? `<img src="${avatar}" alt="Avatar" class="user-avatar">` : ''}
                     <strong>Welcome, ${user.display_name || user.id}!</strong>
+                    ${user.country ? `<span style="margin-left: 10px; opacity: 0.8;">(${user.country})</span>` : ''}
                 `;
                 
                 userInfo.classList.remove('hidden');
@@ -428,30 +508,35 @@
 
             async search() {
                 const query = document.getElementById('searchInput').value.trim();
-                if (!query || !this.accessToken) return;
+                if (!query) {
+                    this.showError('Please enter a search term');
+                    return;
+                }
+
+                if (!this.isTokenValid()) {
+                    this.showError('Please login to search');
+                    return;
+                }
 
                 this.showLoading();
                 this.hideError();
 
                 try {
-                    const response = await fetch(
-                        `https://api.spotify.com/v1/search?q=${encodeURIComponent(query)}&type=${this.currentSearchType}&limit=20`,
-                        {
-                            headers: {
-                                'Authorization': `Bearer ${this.accessToken}`
-                            }
-                        }
-                    );
-
-                    if (!response.ok) {
-                        throw new Error(`HTTP error! status: ${response.status}`);
+                    const marketSelect = document.getElementById('marketSelect');
+                    const market = marketSelect.value;
+                    
+                    let searchUrl = `https://api.spotify.com/v1/search?q=${encodeURIComponent(query)}&type=${this.currentSearchType}&limit=20`;
+                    
+                    if (market) {
+                        searchUrl += `&market=${market}`;
                     }
 
+                    const response = await this.makeSpotifyRequest(searchUrl);
                     const data = await response.json();
                     this.displayResults(data);
                 } catch (error) {
                     console.error('Search error:', error);
-                    this.showError('Failed to search. Please try again.');
+                    this.showError(error.message || 'Failed to search. Please try again.');
                 } finally {
                     this.hideLoading();
                 }
@@ -500,18 +585,20 @@
             }
 
             createTrackCard(track) {
-                const image = track.album.images?.[0]?.url || '';
-                const artists = track.artists.map(a => a.name).join(', ');
+                const image = track.album?.images?.[0]?.url || '';
+                const artists = track.artists?.map(a => a.name).join(', ') || 'Unknown Artist';
                 const duration = this.formatDuration(track.duration_ms);
+                const albumName = track.album?.name || '';
                 
                 return `
-                    <div class="result-card" data-url="${track.external_urls.spotify}">
-                        ${image ? `<img src="${image}" alt="${track.name}" class="card-image">` : ''}
-                        <div class="card-title">${track.name}</div>
-                        <div class="card-subtitle">${artists}</div>
+                    <div class="result-card" data-url="${track.external_urls?.spotify || '#'}">
+                        ${image ? `<img src="${image}" alt="${this.escapeHtml(track.name)}" class="card-image">` : ''}
+                        <div class="card-title">${this.escapeHtml(track.name)}</div>
+                        <div class="card-subtitle">${this.escapeHtml(artists)}</div>
+                        ${albumName ? `<div style="color: rgba(255,255,255,0.6); font-size: 0.9rem; margin-bottom: 10px;">${this.escapeHtml(albumName)}</div>` : ''}
                         <div class="card-info">
                             <span>${duration}</span>
-                            <button class="play-btn" data-uri="${track.uri}">Play</button>
+                            ${track.uri ? `<button class="play-btn" data-uri="${track.uri}">Play</button>` : ''}
                         </div>
                     </div>
                 `;
@@ -519,16 +606,17 @@
 
             createArtistCard(artist) {
                 const image = artist.images?.[0]?.url || '';
-                const followers = this.formatNumber(artist.followers.total);
+                const followers = this.formatNumber(artist.followers?.total || 0);
+                const genres = artist.genres?.slice(0, 2).join(', ') || 'No genres listed';
                 
                 return `
-                    <div class="result-card" data-url="${artist.external_urls.spotify}">
-                        ${image ? `<img src="${image}" alt="${artist.name}" class="card-image">` : ''}
-                        <div class="card-title">${artist.name}</div>
-                        <div class="card-subtitle">${artist.genres.slice(0, 2).join(', ')}</div>
+                    <div class="result-card" data-url="${artist.external_urls?.spotify || '#'}">
+                        ${image ? `<img src="${image}" alt="${this.escapeHtml(artist.name)}" class="card-image">` : ''}
+                        <div class="card-title">${this.escapeHtml(artist.name)}</div>
+                        <div class="card-subtitle">${this.escapeHtml(genres)}</div>
                         <div class="card-info">
                             <span>${followers} followers</span>
-                            <span>Popularity: ${artist.popularity}</span>
+                            <span>Popularity: ${artist.popularity || 0}</span>
                         </div>
                     </div>
                 `;
@@ -536,17 +624,17 @@
 
             createAlbumCard(album) {
                 const image = album.images?.[0]?.url || '';
-                const artists = album.artists.map(a => a.name).join(', ');
-                const year = new Date(album.release_date).getFullYear();
+                const artists = album.artists?.map(a => a.name).join(', ') || 'Unknown Artist';
+                const year = album.release_date ? new Date(album.release_date).getFullYear() : 'Unknown';
                 
                 return `
-                    <div class="result-card" data-url="${album.external_urls.spotify}">
-                        ${image ? `<img src="${image}" alt="${album.name}" class="card-image">` : ''}
-                        <div class="card-title">${album.name}</div>
-                        <div class="card-subtitle">${artists}</div>
+                    <div class="result-card" data-url="${album.external_urls?.spotify || '#'}">
+                        ${image ? `<img src="${image}" alt="${this.escapeHtml(album.name)}" class="card-image">` : ''}
+                        <div class="card-title">${this.escapeHtml(album.name)}</div>
+                        <div class="card-subtitle">${this.escapeHtml(artists)}</div>
                         <div class="card-info">
                             <span>${year}</span>
-                            <span>${album.total_tracks} tracks</span>
+                            <span>${album.total_tracks || 0} tracks</span>
                         </div>
                     </div>
                 `;
@@ -554,13 +642,14 @@
 
             createPlaylistCard(playlist) {
                 const image = playlist.images?.[0]?.url || '';
-                const tracks = this.formatNumber(playlist.tracks.total);
+                const tracks = this.formatNumber(playlist.tracks?.total || 0);
+                const owner = playlist.owner?.display_name || 'Unknown';
                 
                 return `
-                    <div class="result-card" data-url="${playlist.external_urls.spotify}">
-                        ${image ? `<img src="${image}" alt="${playlist.name}" class="card-image">` : ''}
-                        <div class="card-title">${playlist.name}</div>
-                        <div class="card-subtitle">by ${playlist.owner.display_name}</div>
+                    <div class="result-card" data-url="${playlist.external_urls?.spotify || '#'}">
+                        ${image ? `<img src="${image}" alt="${this.escapeHtml(playlist.name)}" class="card-image">` : ''}
+                        <div class="card-title">${this.escapeHtml(playlist.name)}</div>
+                        <div class="card-subtitle">by ${this.escapeHtml(owner)}</div>
                         <div class="card-info">
                             <span>${tracks} tracks</span>
                             <span>${playlist.public ? 'Public' : 'Private'}</span>
@@ -571,12 +660,8 @@
 
             async playTrack(uri) {
                 try {
-                    const response = await fetch('https://api.spotify.com/v1/me/player/play', {
+                    const response = await this.makeSpotifyRequest('https://api.spotify.com/v1/me/player/play', {
                         method: 'PUT',
-                        headers: {
-                            'Authorization': `Bearer ${this.accessToken}`,
-                            'Content-Type': 'application/json'
-                        },
                         body: JSON.stringify({
                             uris: [uri]
                         })
@@ -584,22 +669,32 @@
 
                     if (response.status === 204) {
                         console.log('Track started playing');
-                    } else if (response.status === 404) {
-                        alert('No active Spotify device found. Please open Spotify on a device first.');
                     }
                 } catch (error) {
                     console.error('Play error:', error);
-                    alert('Unable to play track. Make sure Spotify is open on a device.');
+                    if (error.message.includes('404')) {
+                        alert('No active Spotify device found. Please open Spotify on a device first.');
+                    } else {
+                        alert('Unable to play track: ' + error.message);
+                    }
                 }
             }
 
+            escapeHtml(text) {
+                const div = document.createElement('div');
+                div.textContent = text || '';
+                return div.innerHTML;
+            }
+
             formatDuration(ms) {
+                if (!ms) return '0:00';
                 const minutes = Math.floor(ms / 60000);
                 const seconds = ((ms % 60000) / 1000).toFixed(0);
                 return `${minutes}:${seconds.padStart(2, '0')}`;
             }
 
             formatNumber(num) {
+                if (!num) return '0';
                 if (num >= 1000000) {
                     return (num / 1000000).toFixed(1) + 'M';
                 } else if (num >= 1000) {
